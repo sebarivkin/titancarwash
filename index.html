@@ -306,11 +306,12 @@ tr:hover td{background:rgba(0,196,212,.03);}
   <div class="card">
     <div class="card-hdr">
       <span class="card-title">Registrar servicio</span>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <select id="lv-pago" style="width:150px;font-size:12px;padding:6px 10px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="date" id="lv-fecha" style="font-size:12px;padding:6px 10px;width:145px;">
+        <select id="lv-pago" style="width:145px;font-size:12px;padding:6px 10px;">
           <option>Efectivo</option><option>Transferencia</option><option>Débito</option><option>Crédito</option>
         </select>
-        <input type="text" id="lv-patente" placeholder="Patente" style="width:110px;font-size:12px;padding:6px 10px;text-transform:uppercase;">
+        <input type="text" id="lv-patente" placeholder="Patente" style="width:100px;font-size:12px;padding:6px 10px;text-transform:uppercase;">
       </div>
     </div>
     <div class="card-body">
@@ -637,6 +638,23 @@ async function syncToSheets(tabla, fila){
   }
 }
 
+async function deleteFromSheets(tabla, id){
+  const url=db.sheetsUrl;
+  if(!url) return;
+  setSyncUI('spin');
+  try{
+    await fetch(url,{
+      method:'POST', mode:'no-cors',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({accion:'delete',tabla,id})
+    });
+    setSyncUI('ok');
+  }catch(e){
+    setSyncUI('err');
+    console.warn('Sheets delete error:',e);
+  }
+}
+
 async function testSheets(){
   const url=document.getElementById('cfg-url').value.trim();
   if(!url){toast('Primero ingresá la URL','err');return;}
@@ -693,6 +711,7 @@ function doLogout(){
 
 function initFields(){
   const h=hoy(),si=semanaActualInicio();
+  document.getElementById('lv-fecha').value=h;
   document.getElementById('lv-fecha-filtro').value=h;
   document.getElementById('cx-fecha').value=h;
   document.getElementById('adl-fecha').value=h;
@@ -804,26 +823,31 @@ function confirmarServicio(){
   if(!selectedSrv){toast('Seleccioná un servicio','err');return;}
   const now=new Date();
   const hora=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  const fechaReg=document.getElementById('lv-fecha').value||hoy();
   const patente=document.getElementById('lv-patente').value.trim().toUpperCase();
   const pago=document.getElementById('lv-pago').value;
+  const esHoy=fechaReg===hoy();
   const lv={
-    id:uid(),fecha:hoy(),hora,
+    id:uid(),fecha:fechaReg,hora:esHoy?hora:'—',
     servicio:selectedSrv.nombre,cat:selectedSrv.cat,
     precio:selectedSrv.precio,patente,pago,
     user:currentUser.nombre
   };
   db.lavados.push(lv);
-  // Auto-caja
-  db.caja.push({id:uid(),fecha:hoy(),tipo:'ingreso',
+  db.caja.push({id:uid(),fecha:fechaReg,tipo:'ingreso',
     cat:selectedSrv.cat==='Bebida'?'Bebidas':'Lavado',
     desc:`${selectedSrv.nombre}${patente?' — '+patente:''}`,
     monto:selectedSrv.precio,pago,user:currentUser.nombre});
-  auditLog('SERVICIO',`${selectedSrv.nombre} — ${fmt(selectedSrv.precio)}${patente?' — '+patente:''}`);
+  const extra=!esHoy?` (cargado para ${fmtDL(fechaReg)})`:'';
+  auditLog('SERVICIO',`${selectedSrv.nombre} — ${fmt(selectedSrv.precio)}${patente?' — '+patente:''}${extra}`);
   saveDB();
   syncToSheets('Lavados',[lv.id,lv.fecha,lv.hora,lv.servicio,lv.cat,lv.precio,lv.patente,lv.pago,lv.user]);
+  // Sincronizar el filtro del historial con la fecha registrada
+  document.getElementById('lv-fecha-filtro').value=fechaReg;
   renderQuickGrid();renderLavados();renderDashboard();
   document.getElementById('lv-patente').value='';
-  toast(`${selectedSrv.nombre} registrado — ${fmt(selectedSrv.precio)}`,'ok');
+  const msgFecha=!esHoy?` para el ${fmtDL(fechaReg)}`:'';
+  toast(`${selectedSrv.nombre} registrado${msgFecha} — ${fmt(selectedSrv.precio)}`,'ok');
 }
 
 function renderLavados(){
@@ -846,8 +870,12 @@ function eliminarLavado(id){
   if(!confirm('¿Eliminar este registro?'))return;
   const lv=db.lavados.find(l=>l.id===id);
   db.lavados=db.lavados.filter(l=>l.id!==id);
-  auditLog('ELIMINAR SERVICIO',lv?`${lv.servicio}`:id);
-  saveDB();renderLavados();renderDashboard();toast('Eliminado','ok');
+  // También eliminar el movimiento de caja asociado
+  db.caja=db.caja.filter(m=>!(m.desc&&m.desc.includes(lv?.servicio||'__')&&m.fecha===lv?.fecha&&m.monto===lv?.precio));
+  auditLog('ELIMINAR SERVICIO',lv?`${lv.servicio} — ${fmtDL(lv.fecha)}`:id);
+  saveDB();
+  deleteFromSheets('Lavados',id);
+  renderLavados();renderCaja();renderDashboard();toast('Eliminado','ok');
 }
 
 // ═══════════════════════════════════════════
@@ -903,7 +931,9 @@ function eliminarMov(id){
   if(!confirm('¿Eliminar?'))return;
   db.caja=db.caja.filter(m=>m.id!==id);
   auditLog('ELIMINAR MOV',id);
-  saveDB();renderCaja();renderDashboard();toast('Eliminado','ok');
+  saveDB();
+  deleteFromSheets('Caja',id);
+  renderCaja();renderDashboard();toast('Eliminado','ok');
 }
 
 // ═══════════════════════════════════════════
